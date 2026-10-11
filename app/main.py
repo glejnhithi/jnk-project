@@ -3,7 +3,7 @@ app = Flask(__name__)
 
 @app.get('/')
 def home():
-    return jsonify(message='Hello from Jenkins CI/CD on Kubernetes!', version='1.0')
+    return jsonify(message='Hello from Jenkins CI/CD on WSL!', version='2.0')
 
 @app.get('/health')
 def health():

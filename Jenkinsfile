@@ -1,7 +1,22 @@
 
 pipeline {
     agent {
-        label 'student-k8s-agent'
+        kubernetes {
+            inheritFrom 'student-k8s-agent'
+            defaultContainer 'tools'
+
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:v1.23.2-debug
+      command:
+        - /busybox/cat
+      tty: true
+'''
+        }
     }
 
     options {
@@ -37,32 +52,29 @@ pipeline {
             }
         }
 
-        stage('Check Docker Daemon') {
+        stage('Check Environment') {
             steps {
                 container('tools') {
                     sh '''
-                        docker version
-                        docker info
+                        set -e
+
+                        echo "=== Python ==="
+                        python3 --version
+
+                        echo "=== Kubernetes ==="
+                        kubectl version --client
+
+                        echo "=== Workspace ==="
+                        pwd
+                        ls -la
                     '''
                 }
             }
         }
 
-        stage('Docker Build') {
+        stage('Build and Push Docker Image') {
             steps {
-                container('tools') {
-                    sh '''
-                        docker build \
-                          -t "$DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER" \
-                          .
-                    '''
-                }
-            }
-        }
-
-        stage('Docker Hub Push') {
-            steps {
-                container('tools') {
+                container('kaniko') {
                     withCredentials([
                         usernamePassword(
                             credentialsId: 'dockerhub',
@@ -71,18 +83,26 @@ pipeline {
                         )
                     ]) {
                         sh '''
-                            set -e
+                            set -eu
                             set +x
 
-                            export DOCKER_CONFIG="$(mktemp -d)"
-                            trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+                            mkdir -p /kaniko/.docker
 
-                            printf '%s' "$DH_TOKEN" | docker login \
-                              -u "$DH_USER" \
-                              --password-stdin
+                            AUTH=$(printf '%s:%s' \
+                              "$DH_USER" "$DH_TOKEN" \
+                              | base64 | tr -d '\\n')
 
-                            docker push \
-                              "$DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER"
+                            printf '{"auths":{"https://index.docker.io/v1/":{"auth":"%s"}}}' \
+                              "$AUTH" \
+                              > /kaniko/.docker/config.json
+
+                            trap 'rm -f /kaniko/.docker/config.json' EXIT
+
+                            /kaniko/executor \
+                              --context "dir://$WORKSPACE" \
+                              --dockerfile "$WORKSPACE/Dockerfile" \
+                              --destination "$DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER" \
+                              --cache=false
                         '''
                     }
                 }
@@ -103,18 +123,27 @@ pipeline {
                           -n "$K8S_NAMESPACE" \
                           -f kubernetes/service.yaml
 
-                        sed \
-                          "s|image: nginx:stable|image: $DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER|" \
-                          kubernetes/deployment.yaml \
-                          | kubectl apply -n "$K8S_NAMESPACE" -f -
+                        kubectl apply \
+                          -n "$K8S_NAMESPACE" \
+                          -f kubernetes/deployment.yaml
+
+                        kubectl set image \
+                          deployment/student-app \
+                          student-app="$DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER" \
+                          -n "$K8S_NAMESPACE"
 
                         kubectl rollout status \
                           deployment/student-app \
                           -n "$K8S_NAMESPACE" \
                           --timeout=180s
 
+                        echo "=== Pods ==="
                         kubectl get pods -n "$K8S_NAMESPACE"
+
+                        echo "=== Deployments ==="
                         kubectl get deployments -n "$K8S_NAMESPACE"
+
+                        echo "=== Services ==="
                         kubectl get services -n "$K8S_NAMESPACE"
                     '''
                 }

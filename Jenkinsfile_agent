@@ -1,0 +1,91 @@
+pipeline {
+    agent { label 'docker-ready' }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+        timeout(time: 20, unit: 'MINUTES')
+        skipDefaultCheckout(true)
+    }
+
+    environment {
+        DOCKERHUB_USER = 'glejnhithi'
+        IMAGE_NAME = 'student-k8s-cicd'
+        K8S_NAMESPACE = 'students'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Test') {
+            steps {
+                sh '''
+                    set -eu
+                    python3 -m venv .venv
+                    .venv/bin/pip install -r requirements.txt
+                    .venv/bin/python -m pytest -v
+                '''
+            }
+        }
+
+        stage('Check Docker and Kubernetes') {
+            steps {
+                sh '''
+                    set -eu
+                    docker version
+                    docker info >/dev/null
+                    kubectl config current-context
+                    kubectl auth can-i create deployments -n "$K8S_NAMESPACE" | grep -qx yes
+                    kubectl auth can-i patch deployments -n "$K8S_NAMESPACE" | grep -qx yes
+                '''
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    set -eu
+                    docker build -t "$DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER" .
+                '''
+            }
+        }
+
+        stage('Docker Hub Push') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_TOKEN')]) {
+                    sh '''
+                        set -eu
+                        set +x
+                        export DOCKER_CONFIG="$(mktemp -d)"
+                        trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+                        printf '%s' "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
+                        docker push "$DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER"
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                sh '''
+                    set -eu
+                    IMAGE="$DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER"
+                    kubectl apply -n "$K8S_NAMESPACE" -f kubernetes/service.yaml
+                    # Apply the manifest with this build's image; fail if placeholder is absent.
+                    grep -q 'image: nginx:stable' kubernetes/deployment.yaml
+                    sed "s|image: nginx:stable|image: $IMAGE|" kubernetes/deployment.yaml \
+                      | kubectl apply -n "$K8S_NAMESPACE" -f -
+                    kubectl rollout status deployment/student-app -n "$K8S_NAMESPACE" --timeout=180s
+                    kubectl get pods,deployments,services -n "$K8S_NAMESPACE"
+                '''
+            }
+        }
+    }
+
+    post {
+        success { echo 'SUCCESS: Jenkins CI/CD completed!' }
+        failure { echo 'FAILED: Check Jenkins Console Output.' }
+    }
+}

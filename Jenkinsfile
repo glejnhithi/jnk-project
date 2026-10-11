@@ -113,42 +113,32 @@ spec:
             steps {
                 container('tools') {
                     sh '''
-                        set -e
+                set -e
 
-                        echo "=== Kubernetes Deployment ==="
+                echo "=== Kubernetes Deployment ==="
 
-                        kubectl get namespace "$K8S_NAMESPACE"
+                kubectl apply \
+                  -n "$K8S_NAMESPACE" \
+                  -f kubernetes/service.yaml
 
-                        kubectl apply \
-                          -n "$K8S_NAMESPACE" \
-                          -f kubernetes/service.yaml
+                sed \
+                  "s|image: nginx:stable|image: $DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER|" \
+                  kubernetes/deployment.yaml \
+                  | kubectl apply -n "$K8S_NAMESPACE" -f -
 
-                        kubectl apply \
-                          -n "$K8S_NAMESPACE" \
-                          -f kubernetes/deployment.yaml
+                kubectl rollout status \
+                  deployment/student-app \
+                  -n "$K8S_NAMESPACE" \
+                  --timeout=180s
 
-                        kubectl set image \
-                          deployment/student-app \
-                          student-app="$DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER" \
-                          -n "$K8S_NAMESPACE"
-
-                        kubectl rollout status \
-                          deployment/student-app \
-                          -n "$K8S_NAMESPACE" \
-                          --timeout=180s
-
-                        echo "=== Pods ==="
-                        kubectl get pods -n "$K8S_NAMESPACE"
-
-                        echo "=== Deployments ==="
-                        kubectl get deployments -n "$K8S_NAMESPACE"
-
-                        echo "=== Services ==="
-                        kubectl get services -n "$K8S_NAMESPACE"
-                    '''
+                kubectl get pods -n "$K8S_NAMESPACE"
+                kubectl get deployments -n "$K8S_NAMESPACE"
+                kubectl get services -n "$K8S_NAMESPACE"
+            '''
                 }
             }
         }
+
     }
 
     post {

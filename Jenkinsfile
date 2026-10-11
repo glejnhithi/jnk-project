@@ -119,7 +119,17 @@ spec:
 
                 kubectl apply \
                   -n "$K8S_NAMESPACE" \
-                  -f kubernetes/
+                  -f kubernetes/service.yaml
+
+                sed \
+                  "s|image: nginx:stable|image: $DOCKERHUB_USER/$IMAGE_NAME:$BUILD_NUMBER|" \
+                  kubernetes/deployment.yaml \
+                  | kubectl apply -n "$K8S_NAMESPACE" -f -
+
+                kubectl rollout status \
+                  deployment/student-app \
+                  -n "$K8S_NAMESPACE" \
+                  --timeout=180s
 
                 kubectl get pods -n "$K8S_NAMESPACE"
                 kubectl get deployments -n "$K8S_NAMESPACE"
